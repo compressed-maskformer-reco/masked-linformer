@@ -1,0 +1,86 @@
+/private/tmp/claude-501/-Users-lgray-vibe-coding-graphed-workdir/2d14e928-0d94-4bfa-8098-fb1b61308d1a/scratchpad/torchenv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /Users/runner/work/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+
+==============================================================================
+A  C1: best achievable |Atilde[:,pad]| over ALL column subsets, dense E,F, 200 draws
+==============================================================================
+dense E,F : min=0.200 median=0.888 max=2.019  (0 would mean maskable)
+control   : unmasked leak median=0.888 -> nonzero everywhere, instrument live
+block E,F L=6 kill=[2, 3]: leak onto pads=0.000  weight lost from VALID cols=0.000
+block E,F L=9 kill=[3]: leak onto pads=0.000  weight lost from VALID cols=0.000
+block E,F L=7 kill=[2, 3]: leak onto pads=0.000  weight lost from VALID cols=0.000
+block E,F L=7 kill=[3]: leak onto pads=0.266  weight lost from VALID cols=0.532
+
+==============================================================================
+C  C6: dense F -> projected keys with support inside the prefix [0..t]
+==============================================================================
+dense F  #causal-safe cols per query t: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+prefix F #causal-safe cols per query t: [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]   (positive control, instrument live)
+
+==============================================================================
+D  same content at a different offset (left- vs right-aligned padding)
+==============================================================================
+max|out(offset 0) - out(offset 4)| = 2.005   scale max|out| = 3.216
+control max|out(0) - out(0)| = 0.000e+00
+
+==============================================================================
+E  which of K / V must be masked pre-projection?
+==============================================================================
+ neither: max|out - out_perturbed| = 1.660808e+03
+  V only: max|out - out_perturbed| = 2.621673e+00
+  K only: max|out - out_perturbed| = 1.241754e+03
+    both: max|out - out_perturbed| = 0.000000e+00
+
+==============================================================================
+F  pad rows holding NaN/inf: k*mask vs torch.where, forward AND backward
+==============================================================================
+K * m      : nan in out = 128/128   nan in grad K = 128/128   ||grad K[valid]|| = nan
+where(m,K,0): nan in out = 0/128   nan in grad K = 0/128   ||grad K[valid]|| = 4.681e+00
+
+==============================================================================
+G  fairseq E[:, :tgt_len] slicing  ==  zero-masking the trailing pad?
+==============================================================================
+max|sliced - masked| = 4.441e-16   control max|sliced| = 1.205
+control (slice vs UNmasked full) = 1.396
+
+==============================================================================
+H  batched: is grad E[:, i] zero for a position padded in ONLY SOME batch rows?
+==============================================================================
+positions padded in ALL rows: 0  ||grad E[:, never]|| = 0.000e+00
+positions padded in SOME rows: 8  ||grad E[:, some]|| = 1.516e+01  (NONZERO expected)
+
+==============================================================================
+I  output scale drift with valid count under pre-projection masking, and a row-sum renorm
+==============================================================================
+L=16: mean|out|=0.6525  Atilde row-sum mean=-0.9583 min|row-sum|=0.9034  Pbar entropy=1.064 (max 1.386)
+L=11: mean|out|=0.4128  Atilde row-sum mean=-0.6448 min|row-sum|=0.4809  Pbar entropy=1.239 (max 1.386)
+L= 6: mean|out|=0.1939  Atilde row-sum mean=-0.2235 min|row-sum|=0.0861  Pbar entropy=1.289 (max 1.386)
+L= 3: mean|out|=0.0759  Atilde row-sum mean=+0.1179 min|row-sum|=0.0395  Pbar entropy=1.370 (max 1.386)
+renorm hazard: over 500 random query rows, min|Atilde row-sum| = 0.40063, sign changes present = False  -> out/rowsum is unsafe
+block-kill cost check: with block E,F (L=7,kill=[2,3]) valid col 6 receives Atilde[:,6] weight = 0.000 (0 => a VALID token is unattendable)
+
+==============================================================================
+J  multi-head + attention dropout on Pbar: still invariant to pad content?
+==============================================================================
+no dropout : max|out - out_perturbed| = 0.000e+00   control max|out| = 1.080
+dropout 0.3: max|out - out_perturbed| = 0.000e+00   control max|out| = 1.542
+
+==============================================================================
+K  softmax temperature vs valid count: plain vs E-row renormalization (entropy)
+==============================================================================
+  L   H_plain  H_renorm   (max = 2.079)   mean||K'|| plain / renorm
+  8     0.981     2.053            42.390 / 6.895
+ 16     0.828     2.066            88.246 / 6.921
+ 32     0.527     2.073           154.206 / 6.212
+ 64     0.407     2.075           326.086 / 6.514
+
+==============================================================================
+L  fp16: -1e9 additive mask instead of -inf
+==============================================================================
+fp16 S - 1e9 -> -inf (inf-saturated), softmax col2 max = 0.000e+00, nan = 0
+fp32 hard -1e9: softmax col2 max = 0.000e+00 (nonzero residual grad path)
+/private/tmp/claude-501/-Users-lgray-vibe-coding-graphed-workdir/2d14e928-0d94-4bfa-8098-fb1b61308d1a/scratchpad/torchenv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /Users/runner/work/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+M  tatp22 causal mask (n,k): rows that mask NOTHING = 13 / 16 ; first masked-out entry per row: [1, 2, 3, -1, -1, -1]
+N  pad-query rows after K/V pre-masking: mean|out[pad]| = 0.3647   mean|out[valid]| = 0.4347  -> pad rows are NOT zero, re-mask per layer
+O  zeroing padded Q rows (tatp22 embeddings_mask): mean|out[pad]| = 0.3452  (softmax(0)=uniform -> mean of V', still nonzero)
