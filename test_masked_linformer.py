@@ -159,13 +159,12 @@ def test_matches_lucidrains_linformer_package():
         a = attn(renorm).eval()
         a.load_state_dict(ref.state_dict())
         torch.testing.assert_close(a(x), ref(x), rtol=0, atol=1e-14)
-        # a shorter unmasked input equals the full-length input masked beyond it ...
-        torch.testing.assert_close(a(xs), a(x, mask=mask24)[:, :24], rtol=0, atol=1e-14)
-    # ... which coincides with lucidrains' sliced projection only without the rescale
-    b = attn(False).eval()
-    b.load_state_dict(ref.state_dict())
-    torch.testing.assert_close(b(xs), ref(xs), rtol=0, atol=1e-14)
-    assert (a(xs) - ref(xs)).abs().max() > 1e-2
+        torch.testing.assert_close(
+            a(xs), ref(xs), rtol=0, atol=1e-14
+        )  # unmasked short input: sliced E
+        # a mask of all ones on the short input rescales only with renorm on
+        diff = (a(xs, mask=mask24[:, :24]) - ref(xs)).abs().max()
+        assert (diff > 1e-2) if renorm else (diff == 0), (renorm, diff.item())
 
     torch.manual_seed(1)
     lm_ref = (

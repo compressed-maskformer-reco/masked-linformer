@@ -12,7 +12,10 @@ which turns sequence length into an attention temperature. With ``renorm=True`` 
 column j is rescaled by ||E[:, j]|| / ||E[valid, j]|| so its norm matches the full-length case.
 Measured on xavier-init E (n=256): plain zeroing gives 0.19x norm at 8 valid tokens, this
 rescale gives 1.07x; count-based rescaling (n / n_valid) overshoots to 6x. The numerator is the
-norm over the full ``seq_len`` so the result does not depend on how far a batch was padded.
+norm over the full ``seq_len`` so the result does not depend on how far a batch was padded. The
+rescale applies only when a mask is passed; unmasked inputs of any length reproduce
+lucidrains/linformer exactly (E sliced to the batch length), so a mask of all ones on a short
+input is not the same as no mask.
 
 ``torch.where`` is used rather than a mask multiply: a NaN or inf in a padded row would otherwise
 propagate through ``0 * nan`` into every output row and every gradient. E and F index absolute
@@ -92,6 +95,8 @@ class LinformerSelfAttention(nn.Module):
     def _project(self, t, proj, mask):
         """(b, n, d) -> (b, k, d) along the sequence axis; padded rows of ``t`` contribute nothing."""
         n = t.shape[1]
+        if mask is None:  # plain Linformer: E sliced to the batch length, no rescale
+            return torch.einsum("bnd,nk->bkd", t, proj[:n])
         out = torch.einsum(
             "bnd,nk->bkd", torch.where(mask[..., None], t, 0.0), proj[:n]
         )
@@ -118,10 +123,8 @@ class LinformerSelfAttention(nn.Module):
             f"key/value length {kv_len} exceeds seq_len {self.seq_len}"
         )
 
-        if context_mask is None:
-            context_mask = mask if context is None else None
-        if context_mask is None:
-            context_mask = torch.ones(b, kv_len, dtype=torch.bool, device=x.device)
+        if context_mask is None and context is None:
+            context_mask = mask
 
         queries = self.to_q(x)
         keys = self.to_k(kv_input)
