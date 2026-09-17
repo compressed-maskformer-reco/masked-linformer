@@ -3,6 +3,8 @@ name = "masked-linformer"
 version = "0.1.0"
 description = "Linformer self-attention with padding masks applied before the sequence projection, plus mask-aware rescaling"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = ["torch>=2.0"]
 
 [dependency-groups]
