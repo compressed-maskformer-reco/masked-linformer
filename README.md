@@ -28,6 +28,11 @@ the projected key and value norms do not shrink with the number of valid tokens.
 8 seeds x 64 inputs at init (n=64, k=8): projected key norm at 1 valid token is 0.10x the
 full-length value without the rescale and 1.01x with it; output RMS 0.43x vs 0.92x.
 
+With no mask and `n == seq_len` the output is identical to lucidrains/linformer with the same
+weights (tested against the package). An unmasked input shorter than `seq_len` is treated as a
+full-length input masked beyond `n`; with `renorm=False` that reduces to lucidrains' sliced
+projection, with `renorm=True` (default) the rescale applies and the outputs differ.
+
 Not supported: causal masking (every projected key mixes future positions; the `(n, k)` triangular
 mask some implementations offer leaves every query beyond position k unmasked).
 

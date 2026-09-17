@@ -147,3 +147,51 @@ def test_lm_logits_at_valid_positions_ignore_pad_tokens():
     assert (
         lm(toks)[mask] - logits[mask]
     ).abs().max() > 1e-3  # unmasked: pad slots do matter
+
+
+def test_matches_lucidrains_linformer_package():
+    ld = pytest.importorskip("linformer")
+    ref = ld.LinformerSelfAttention(DIM, SEQ, k=K, heads=HEADS).double().eval()
+    x, _ = batch([SEQ, SEQ])
+    xs = x[:, :24]
+    mask24 = torch.arange(SEQ)[None].expand(2, -1) < 24
+    for renorm in (False, True):
+        a = attn(renorm).eval()
+        a.load_state_dict(ref.state_dict())
+        torch.testing.assert_close(a(x), ref(x), rtol=0, atol=1e-14)
+        # a shorter unmasked input equals the full-length input masked beyond it ...
+        torch.testing.assert_close(a(xs), a(x, mask=mask24)[:, :24], rtol=0, atol=1e-14)
+    # ... which coincides with lucidrains' sliced projection only without the rescale
+    b = attn(False).eval()
+    b.load_state_dict(ref.state_dict())
+    torch.testing.assert_close(b(xs), ref(xs), rtol=0, atol=1e-14)
+    assert (a(xs) - ref(xs)).abs().max() > 1e-2
+
+    torch.manual_seed(1)
+    lm_ref = (
+        ld.LinformerLM(num_tokens=50, dim=DIM, seq_len=SEQ, depth=2, k=K, heads=HEADS)
+        .double()
+        .eval()
+    )
+    lm = (
+        LinformerLM(num_tokens=50, dim=DIM, seq_len=SEQ, depth=2, k=K, heads=HEADS)
+        .double()
+        .eval()
+    )
+
+    def remap(
+        key,
+    ):  # lucidrains linformer.net.layers.i.{0,1}.{norm,fn}.* -> layers.i.{0,1,2,3}.*
+        if not key.startswith("linformer.net.layers."):
+            return key
+        _, _, _, i, slot, kind, *rest = key.split(".")
+        idx = {("0", "norm"): 0, ("0", "fn"): 1, ("1", "norm"): 2, ("1", "fn"): 3}[
+            (slot, kind)
+        ]
+        return ".".join(["linformer", "layers", i, str(idx), *rest])
+
+    lm.load_state_dict(
+        {remap(k): v for k, v in lm_ref.state_dict().items()}, strict=True
+    )
+    toks = torch.randint(0, 50, (2, SEQ))
+    torch.testing.assert_close(lm(toks), lm_ref(toks), rtol=0, atol=1e-12)

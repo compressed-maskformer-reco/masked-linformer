@@ -8,7 +8,10 @@ license-files = ["LICENSE"]
 dependencies = ["torch>=2.0"]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "linformer>=0.2.3",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]

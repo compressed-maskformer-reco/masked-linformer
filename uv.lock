@@ -146,6 +146,18 @@ wheels = [
 ]
 
 [[package]]
+name = "linformer"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/a1/a3834aec6591c141e54ec0cd7311432708ec19f6ee1d5dd9bf4a79a72c67/linformer-0.2.3.tar.gz", hash = "sha256:747a4dc025a557d164b61170f140ec4aa37cfca3ce088318f3d5f39194cfcaba", size = 6518, upload-time = "2024-01-05T20:40:37.23Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/d0/72ebb12edbfd28ae8e9838db10dd6e5a1ecfa1958bcf769e8f2e1df4698e/linformer-0.2.3-py3-none-any.whl", hash = "sha256:6e44ab72443014582c967d4323e8034e8e0f51e9a0ab360c22c4e4c47366f13e", size = 6172, upload-time = "2024-01-05T20:40:35.252Z" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -240,6 +252,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "linformer" },
     { name = "pytest" },
 ]
 
@@ -247,7 +260,10 @@ dev = [
 requires-dist = [{ name = "torch", specifier = ">=2.0" }]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "linformer", specifier = ">=0.2.3" },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "mpmath"
