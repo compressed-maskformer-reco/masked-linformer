@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from masked_linformer import LinformerLM, LinformerSelfAttention
+from masked_linformer import LinformerLM, LinformerSelfAttention, project
 
 DIM, SEQ, K, HEADS = 32, 64, 8, 4
 
@@ -194,3 +194,15 @@ def test_matches_lucidrains_linformer_package():
     )
     toks = torch.randint(0, 50, (2, SEQ))
     torch.testing.assert_close(lm(toks), lm_ref(toks), rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("renorm", [False, True])
+def test_project_leading_dims_match_per_slice(renorm):
+    torch.manual_seed(0)
+    proj = torch.randn(SEQ, K, dtype=torch.float64)
+    x, mask = batch([11, 5, 40])
+    t = torch.stack([x, 2 * x], dim=1)  # (b, h, n, d)
+    out = project(garbage_at_pad(t, mask[:, None]), proj, mask, renorm)
+    per_slice = torch.stack([project(t[:, i], proj, mask, renorm) for i in range(2)], 1)
+    assert torch.equal(out, per_slice)
+    assert not torch.equal(out[0], out[1])  # control: events are not mixed together

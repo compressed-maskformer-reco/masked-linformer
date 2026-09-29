@@ -36,6 +36,31 @@ def init_(tensor):
     return tensor.uniform_(-std, std)
 
 
+def project(t, proj, mask=None, renorm=True, eps=1e-8):
+    """Project ``t`` (b, ..., n, d) along n with ``proj`` (seq_len, k) -> (b, ..., k, d).
+
+    ``mask`` is bool ``(b, n)``, True = real token; padded rows of ``t`` contribute nothing.
+    """
+    n = t.shape[-2]
+    if mask is None:  # plain Linformer: E sliced to the batch length, no rescale
+        return torch.einsum("...nd,nk->...kd", t, proj[:n])
+    bcast = (mask.shape[0],) + (1,) * (t.ndim - 3)
+    out = torch.einsum(
+        "...nd,nk->...kd", torch.where(mask.view(*bcast, n, 1), t, 0.0), proj[:n]
+    )
+    if renorm:
+        # eps must survive half precision
+        p = proj.to(torch.promote_types(proj.dtype, torch.float32))
+        full = p.pow(2).sum(0).sqrt()  # over all seq_len rows: batch-padding invariant
+        kept = (
+            torch.einsum("bn,nk->bk", mask.to(p.dtype), p[:n].pow(2))
+            .sqrt()
+            .clamp_min(eps)
+        )
+        out = out * (full / kept).to(out.dtype).view(*bcast, -1, 1)
+    return out
+
+
 class FeedForward(nn.Module):
     def __init__(self, dim, mult=4, dropout=0.0, glu=False):
         super().__init__()
@@ -94,26 +119,7 @@ class LinformerSelfAttention(nn.Module):
 
     def _project(self, t, proj, mask):
         """(b, n, d) -> (b, k, d) along the sequence axis; padded rows of ``t`` contribute nothing."""
-        n = t.shape[1]
-        if mask is None:  # plain Linformer: E sliced to the batch length, no rescale
-            return torch.einsum("bnd,nk->bkd", t, proj[:n])
-        out = torch.einsum(
-            "bnd,nk->bkd", torch.where(mask[..., None], t, 0.0), proj[:n]
-        )
-        if self.renorm:
-            p = proj.to(
-                torch.promote_types(proj.dtype, torch.float32)
-            )  # eps must survive half precision
-            full = (
-                p.pow(2).sum(0).sqrt()
-            )  # over all seq_len rows: batch-padding invariant
-            kept = (
-                torch.einsum("bn,nk->bk", mask.to(p.dtype), p[:n].pow(2))
-                .sqrt()
-                .clamp_min(self.eps)
-            )
-            out = out * (full / kept).to(out.dtype)[..., None]
-        return out
+        return project(t, proj, mask, self.renorm, self.eps)
 
     def forward(self, x, context=None, mask=None, context_mask=None):
         b, n, _ = x.shape
