@@ -58,7 +58,8 @@ def _rescale(proj, mask, eps):
     # eps must survive half precision
     p = proj.to(torch.promote_types(proj.dtype, torch.float32))
     full = p.pow(2).sum(0).sqrt()  # over all seq_len rows: batch-padding invariant
-    kept = (mask.to(p.dtype) @ p[: mask.shape[-1]].pow(2)).sqrt().clamp_min(eps)
+    # clamp before the sqrt: sqrt'(0) is inf, and inf * 0 poisons the gradient of an all-False row
+    kept = (mask.to(p.dtype) @ p[: mask.shape[-1]].pow(2)).clamp_min(eps**2).sqrt()
     return full / kept
 
 

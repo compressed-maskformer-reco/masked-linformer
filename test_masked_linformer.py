@@ -245,6 +245,7 @@ def test_attend_matches_per_query_projection(renorm):
 def test_attend_hidden_keys_do_not_leak():
     q, k, v, pk, pv, m = qkv_masks()
     k.requires_grad_(True)
+    pk.requires_grad_(True)
     out = attend(q, k, v, pk, pv, m)
     hidden = ~m.any(1)[:, None, :, None].expand_as(k)
     k_nan = torch.where(hidden, float("nan"), k.detach())
@@ -253,6 +254,7 @@ def test_attend_hidden_keys_do_not_leak():
     out.square().sum().backward()
     assert torch.equal(k.grad[hidden], torch.zeros_like(k.grad[hidden]))
     assert k.grad[~hidden].norm() > 1e-3
+    assert pk.grad.isfinite().all()  # the all-False query row
 
 
 @pytest.mark.parametrize("renorm", [False, True])
@@ -262,3 +264,11 @@ def test_attn_mask_of_padding_equals_padding_mask(renorm):
     out = a(x, mask=mask)
     uniform = mask[:, None, :].expand(-1, SEQ, -1)
     torch.testing.assert_close(a(x, mask=mask, attn_mask=uniform)[mask], out[mask])
+
+
+def test_fully_padded_event_has_finite_projection_gradient():
+    a = attn()
+    x, mask = batch([0, 11])
+    a(x, mask=mask).square().sum().backward()
+    assert a.proj_k.grad.isfinite().all()
+    assert a.proj_k.grad.abs().sum() > 0
