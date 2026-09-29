@@ -49,16 +49,41 @@ def project(t, proj, mask=None, renorm=True, eps=1e-8):
         "...nd,nk->...kd", torch.where(mask.view(*bcast, n, 1), t, 0.0), proj[:n]
     )
     if renorm:
-        # eps must survive half precision
-        p = proj.to(torch.promote_types(proj.dtype, torch.float32))
-        full = p.pow(2).sum(0).sqrt()  # over all seq_len rows: batch-padding invariant
-        kept = (
-            torch.einsum("bn,nk->bk", mask.to(p.dtype), p[:n].pow(2))
-            .sqrt()
-            .clamp_min(eps)
-        )
-        out = out * (full / kept).to(out.dtype).view(*bcast, -1, 1)
+        out = out * _rescale(proj, mask, eps).to(out.dtype).view(*bcast, -1, 1)
     return out
+
+
+def _rescale(proj, mask, eps):
+    """Column rescale ||E[:, j]|| / ||E[valid, j]|| for a bool ``mask`` (..., n) -> (..., k)."""
+    # eps must survive half precision
+    p = proj.to(torch.promote_types(proj.dtype, torch.float32))
+    full = p.pow(2).sum(0).sqrt()  # over all seq_len rows: batch-padding invariant
+    kept = (mask.to(p.dtype) @ p[: mask.shape[-1]].pow(2)).sqrt().clamp_min(eps)
+    return full / kept
+
+
+def attend(q, k, v, proj_k, proj_v, attn_mask, renorm=True, eps=1e-8, dropout_p=0.0):
+    """Linformer attention where each query sees only the keys its ``attn_mask`` row allows.
+
+    ``q`` (b, h, nq, d), ``k``/``v`` (b, h, n, d), ``attn_mask`` bool (b, nq, n), True = attend;
+    fold any key padding into it. Query i attends to its own projections E^T diag(M_i) K and
+    F^T diag(M_i) V. These are never built: with S = q k^T the scores are (S * M_i) E and the
+    output is ((a F^T) * M_i) v, the same numbers in (b, h, nq, n) memory. A query with an
+    all-False row gets a zero output.
+    """
+    n = k.shape[-2]
+    m = attn_mask[:, None]
+    # keys no query may see can hold NaN (padding); where-selecting the scores alone would let it into the matmuls
+    seen = m.any(-2)[..., None]
+    k, v = torch.where(seen, k, 0.0), torch.where(seen, v, 0.0)
+    scores = torch.where(m, q @ k.transpose(-1, -2), 0.0) * q.shape[-1] ** -0.5
+    scores = scores @ proj_k[:n].to(scores.dtype)
+    if renorm:
+        scores = scores * _rescale(proj_k, attn_mask, eps).to(scores.dtype)[:, None]
+    attn = F.dropout(scores.softmax(dim=-1), dropout_p)
+    if renorm:
+        attn = attn * _rescale(proj_v, attn_mask, eps).to(attn.dtype)[:, None]
+    return torch.where(m, attn @ proj_v[:n].to(attn.dtype).T, 0.0) @ v
 
 
 class FeedForward(nn.Module):
@@ -121,7 +146,8 @@ class LinformerSelfAttention(nn.Module):
         """(b, n, d) -> (b, k, d) along the sequence axis; padded rows of ``t`` contribute nothing."""
         return project(t, proj, mask, self.renorm, self.eps)
 
-    def forward(self, x, context=None, mask=None, context_mask=None):
+    def forward(self, x, context=None, mask=None, context_mask=None, attn_mask=None):
+        """``attn_mask`` bool (b, n, kv_len), True = attend: per-query masking, see ``attend``."""
         b, n, _ = x.shape
         kv_input = x if context is None else context
         kv_len = kv_input.shape[1]
@@ -137,19 +163,28 @@ class LinformerSelfAttention(nn.Module):
         values = keys if self.share_kv else self.to_v(kv_input)
         proj_v = self.proj_k if self.share_kv else self.proj_v
 
-        keys = self._project(keys, self.proj_k, context_mask)
-        values = self._project(values, proj_v, context_mask)
-
         h, d_h, k = self.heads, self.dim_head, self.k
         queries = queries.reshape(b, n, h, d_h).transpose(1, 2)
-        keys, values = (
-            t.reshape(b, k, -1, d_h).transpose(1, 2).expand(-1, h, -1, -1)
-            for t in (keys, values)
-        )
 
-        dots = torch.einsum("bhnd,bhkd->bhnk", queries, keys) * d_h**-0.5
-        attn = self.dropout(dots.softmax(dim=-1))
-        out = torch.einsum("bhnk,bhkd->bhnd", attn, values)
+        if attn_mask is not None:
+            if context_mask is not None:
+                attn_mask = attn_mask & context_mask[:, None]
+            keys, values = (
+                t.reshape(b, kv_len, -1, d_h).transpose(1, 2).expand(-1, h, -1, -1)
+                for t in (keys, values)
+            )
+            p = self.dropout.p if self.training else 0.0
+            out = attend(queries, keys, values, self.proj_k, proj_v, attn_mask, self.renorm, self.eps, p)
+        else:
+            keys = self._project(keys, self.proj_k, context_mask)
+            values = self._project(values, proj_v, context_mask)
+            keys, values = (
+                t.reshape(b, k, -1, d_h).transpose(1, 2).expand(-1, h, -1, -1)
+                for t in (keys, values)
+            )
+            dots = torch.einsum("bhnd,bhkd->bhnk", queries, keys) * d_h**-0.5
+            attn = self.dropout(dots.softmax(dim=-1))
+            out = torch.einsum("bhnk,bhkd->bhnd", attn, values)
         out = self.to_out(out.transpose(1, 2).reshape(b, n, -1))
         if mask is not None:
             out = torch.where(mask[..., None], out, 0.0)
