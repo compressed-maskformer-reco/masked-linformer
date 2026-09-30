@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from masked_linformer import LinformerLM, LinformerSelfAttention, project
+from masked_linformer import LinformerLM, LinformerSelfAttention, attend, project
 
 DIM, SEQ, K, HEADS = 32, 64, 8, 4
 
@@ -206,3 +206,69 @@ def test_project_leading_dims_match_per_slice(renorm):
     per_slice = torch.stack([project(t[:, i], proj, mask, renorm) for i in range(2)], 1)
     assert torch.equal(out, per_slice)
     assert not torch.equal(out[0], out[1])  # control: events are not mixed together
+
+
+def per_query_reference(q, k, v, proj_k, proj_v, attn_mask, renorm):
+    """Materialize each query's own projections E^T diag(M_i) K, F^T diag(M_i) V."""
+    outs = []
+    for i in range(q.shape[-2]):
+        k_i = project(k, proj_k, attn_mask[:, i], renorm)
+        v_i = project(v, proj_v, attn_mask[:, i], renorm)
+        a = (q[..., i : i + 1, :] @ k_i.transpose(-1, -2) * q.shape[-1] ** -0.5).softmax(-1)
+        outs.append(a @ v_i)
+    return torch.cat(outs, dim=-2)
+
+
+def qkv_masks(nq=7, n=SEQ - 3, seed=0):
+    torch.manual_seed(seed)
+    b, h, d = 3, 2, 8
+    q = torch.randn(b, h, nq, d, dtype=torch.float64)
+    k, v = torch.randn(2, b, h, n, d, dtype=torch.float64)
+    attn_mask = torch.rand(b, nq, n) < 0.3
+    attn_mask[:, :, -4:] = False  # padding: no query may see it
+    attn_mask[0, 2] = False  # a query with nothing to attend to
+    proj_k, proj_v = torch.randn(2, SEQ, K, dtype=torch.float64)
+    return q, k, v, proj_k, proj_v, attn_mask
+
+
+@pytest.mark.parametrize("renorm", [False, True])
+def test_attend_matches_per_query_projection(renorm):
+    q, k, v, pk, pv, m = qkv_masks()
+    out = attend(q, k, v, pk, pv, m, renorm)
+    torch.testing.assert_close(out, per_query_reference(q, k, v, pk, pv, m, renorm))
+    assert torch.equal(out[0, :, 2], torch.zeros_like(out[0, :, 2]))
+    # control: the per-query masks matter
+    shared = m.any(1, keepdim=True).expand_as(m)
+    assert (attend(q, k, v, pk, pv, shared, renorm) - out).abs().max() > 1e-3
+
+
+def test_attend_hidden_keys_do_not_leak():
+    q, k, v, pk, pv, m = qkv_masks()
+    k.requires_grad_(True)
+    pk.requires_grad_(True)
+    out = attend(q, k, v, pk, pv, m)
+    hidden = ~m.any(1)[:, None, :, None].expand_as(k)
+    k_nan = torch.where(hidden, float("nan"), k.detach())
+    v_nan = torch.where(hidden, float("nan"), v)
+    assert torch.equal(attend(q, k_nan, v_nan, pk, pv, m), out.detach())
+    out.square().sum().backward()
+    assert torch.equal(k.grad[hidden], torch.zeros_like(k.grad[hidden]))
+    assert k.grad[~hidden].norm() > 1e-3
+    assert pk.grad.isfinite().all()  # the all-False query row
+
+
+@pytest.mark.parametrize("renorm", [False, True])
+def test_attn_mask_of_padding_equals_padding_mask(renorm):
+    a = attn(renorm)
+    x, mask = batch([11, 5, 40])
+    out = a(x, mask=mask)
+    uniform = mask[:, None, :].expand(-1, SEQ, -1)
+    torch.testing.assert_close(a(x, mask=mask, attn_mask=uniform)[mask], out[mask])
+
+
+def test_fully_padded_event_has_finite_projection_gradient():
+    a = attn()
+    x, mask = batch([0, 11])
+    a(x, mask=mask).square().sum().backward()
+    assert a.proj_k.grad.isfinite().all()
+    assert a.proj_k.grad.abs().sum() > 0

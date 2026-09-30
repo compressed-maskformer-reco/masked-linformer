@@ -33,6 +33,17 @@ lucidrains/linformer with the same weights at any length (tested against the pac
 module is a drop-in there; note that lucidrains' sliced projection then keeps the length
 dependence across unmasked batches of different lengths (0.50x key norm at half length).
 
+Per-query masks (`attn_mask`, bool `(batch, n, kv_len)`, e.g. MaskFormer's mask attention) are
+exact: query `i` attends to its own projections `E^T diag(M_i) K` and `F^T diag(M_i) V`, each
+with the column rescale of its own mask. `attend(q, k, v, proj_k, proj_v, attn_mask)` computes
+the same numbers without building them, as `(S * M_i) E` for the scores and `((a F^T) * M_i) v`
+for the output (`S = q k^T`), so memory is that of ordinary attention and so is the compute: the
+saving Linformer gives the shared projection does not carry over to per-query masks.
+
+```python
+y = attn(x, context=mem, context_mask=mem_mask, attn_mask=query_to_mem_mask)
+```
+
 Not supported: causal masking (every projected key mixes future positions; the `(n, k)` triangular
 mask some implementations offer leaves every query beyond position k unmasked).
 
